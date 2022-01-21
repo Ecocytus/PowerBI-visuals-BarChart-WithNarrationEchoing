@@ -131,6 +131,17 @@
                     }
                 }
             }
+        },
+        "narration": {
+            "displayName": "Narration",
+            "properties": {
+                "text": {
+                    "type": {
+                        "text": true
+                    },
+                    "suppressFormatPainterCopy": true
+                }
+            }
         }
     },
     "tooltips": {

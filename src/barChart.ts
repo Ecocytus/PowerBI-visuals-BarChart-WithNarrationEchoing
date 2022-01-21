@@ -1,4 +1,5 @@
 import "./../style/visual.less";
+import "d3-transition";
 import {
     event as d3Event,
     select as d3Select
@@ -14,7 +15,7 @@ import powerbiVisualsApi from "powerbi-visuals-api";
 import "regenerator-runtime/runtime";
 import powerbi = powerbiVisualsApi;
 
-type Selection<T1, T2 = T1> = d3.Selection<any, T1, any, T2>;
+// type Selection<T1, T2 = T1> = d3.Selection<any, T1, any, T2>;
 import ScaleLinear = d3.ScaleLinear;
 const getEvent = () => require("d3-selection").event;
 
@@ -35,9 +36,12 @@ import VisualTooltipDataItem = powerbi.extensibility.VisualTooltipDataItem;
 import VisualUpdateOptions = powerbi.extensibility.visual.VisualUpdateOptions;
 import VisualConstructorOptions = powerbi.extensibility.visual.VisualConstructorOptions;
 import VisualEnumerationInstanceKinds = powerbi.VisualEnumerationInstanceKinds;
+import IVisualEventService = powerbi.extensibility.IVisualEventService;
 
 import {createTooltipServiceWrapper, ITooltipServiceWrapper} from "powerbi-visuals-utils-tooltiputils";
-import { textMeasurementService } from "powerbi-visuals-utils-formattingutils";
+import { textMeasurementService, interfaces } from "powerbi-visuals-utils-formattingutils";
+
+import TextProperties = interfaces.TextProperties;
 
 import { getValue, getCategoricalObjectValue } from "./objectEnumerationUtility";
 import { getLocalizedString } from "./localization/localizationHelper"
@@ -101,6 +105,10 @@ interface BarChartSettings {
         fill: string;
         showDataLabel: boolean;
     };
+
+    narration: {
+        text: string;
+    };
 }
 
 let defaultSettings: BarChartSettings = {
@@ -118,6 +126,9 @@ let defaultSettings: BarChartSettings = {
         displayName: "Average Line",
         fill: "#888888",
         showDataLabel: false
+    },
+    narration: {
+        text: ""
     }
 };
 
@@ -176,6 +187,9 @@ function visualTransform(options: VisualUpdateOptions, host: IVisualHost): BarCh
             fill: getValue<string>(objects, 'averageLine', 'fill', defaultSettings.averageLine.fill),
             showDataLabel: getValue<boolean>(objects, 'averageLine', 'showDataLabel', defaultSettings.averageLine.showDataLabel),
         },
+        narration: {
+            text: getValue<string>(objects, 'narration', 'text', defaultSettings.narration.text),
+        }
     };
 
     const strokeWidth: number = getColumnStrokeWidth(colorPalette.isHighContrast);
@@ -264,21 +278,26 @@ function getAxisTextFillColor(
 }
 
 export class BarChart implements IVisual {
-    private svg: Selection<any>;
+    private svg: d3.Selection<any, any, any, any>;
     private host: IVisualHost;
     private selectionManager: ISelectionManager;
-    private barContainer: Selection<SVGElement>;
-    private xAxis: Selection<SVGElement>;
+    private button: d3.Selection<any, SVGElement, any, SVGElement>;
+    private barContainer: d3.Selection<any, SVGElement, any, SVGElement>;
+    private xAxis: d3.Selection<any, SVGElement, any, SVGElement>;
+    private subtitles: d3.Selection<any, SVGElement, any, SVGElement>;
     private barDataPoints: BarChartDataPoint[];
     private barChartSettings: BarChartSettings;
     private tooltipServiceWrapper: ITooltipServiceWrapper;
     private locale: string;
-    private helpLinkElement: Selection<any>;
+    private helpLinkElement: d3.Selection<any, any, any, any>;
     private element: HTMLElement;
     private isLandingPageOn: boolean;
     private LandingPageRemoved: boolean;
-    private LandingPage: Selection<any>;
-    private averageLine: Selection<SVGElement>;
+    private LandingPage: d3.Selection<any, any, any, any>;
+    private averageLine: d3.Selection<any, SVGElement, any, SVGElement>;
+    private events: IVisualEventService;
+    private audio: HTMLAudioElement;
+    private speech: SpeechSynthesisUtterance;
 
     private barSelection: d3.Selection<d3.BaseType, any, d3.BaseType, any>;
 
@@ -308,6 +327,7 @@ export class BarChart implements IVisual {
         this.element = options.element;
         this.selectionManager = options.host.createSelectionManager();
         this.locale = options.host.locale;
+        this.events = options.host.eventService;
 
         this.selectionManager.registerOnSelectCallback(() => {
             this.syncSelectionState(this.barSelection, <ISelectionId[]>this.selectionManager.getSelectionIds());
@@ -319,6 +339,17 @@ export class BarChart implements IVisual {
             .append('svg')
             .classed('barChart', true);
 
+        const svg_button  = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60" style="enable-background:new 0 0 60 60" xml:space="preserve"><path d="m45.563 29.174-22-15A1 1 0 0 0 22 15v30a.999.999 0 0 0 1.563.826l22-15a1 1 0 0 0 0-1.652zM24 43.107V16.893L43.225 30 24 43.107z"/><path d="M30 0C13.458 0 0 13.458 0 30s13.458 30 30 30 30-13.458 30-30S46.542 0 30 0zm0 58C14.561 58 2 45.439 2 30S14.561 2 30 2s28 12.561 28 28-12.561 28-28 28z"/></svg>';
+
+        this.button = this.svg
+            .append('g')
+            .append('svg')
+            .classed("svg-container", true)
+            .html(svg_button)
+            .attr('stroke', 'black')
+            .attr('stroke-opacity', 0.0)
+            .attr('stroke-width', 20);
+
         this.barContainer = this.svg
             .append('g')
             .classed('barContainer', true);
@@ -329,8 +360,20 @@ export class BarChart implements IVisual {
 
         this.initAverageLine();
 
+        this.subtitles = this.svg
+            .append('g')
+            .classed("subtitles", true);
+
+        this.subtitles.append('text')
+            .attr('id', 't1');
+        this.subtitles.append('rect')
+            .attr('id', 'rect1');
+
         const helpLinkElement: Element = this.createHelpLinkElement();
         options.element.appendChild(helpLinkElement);
+
+        this.speech = new SpeechSynthesisUtterance();
+        this.speech.lang = 'en';
 
         this.helpLinkElement = d3Select(helpLinkElement);
 
@@ -346,6 +389,7 @@ export class BarChart implements IVisual {
      *                                        the visual had queried.
      */
     public update(options: VisualUpdateOptions) {
+        // this.events.renderingStarted(options);
         let viewModel: BarChartViewModel = visualTransform(options, this.host);
         let settings = this.barChartSettings = viewModel.settings;
         this.barDataPoints = viewModel.dataPoints;
@@ -367,6 +411,11 @@ export class BarChart implements IVisual {
             .classed("hidden", !settings.generalView.showHelpLink)
             .style("border-color", settings.generalView.helpLinkColor)
             .style("color", settings.generalView.helpLinkColor);
+
+        this.button
+            .attr('x', width-width/10)
+            .attr("width", width/10)
+            .attr("height", height/10);
 
         this.xAxis
             .style("font-size", Math.min(height, width) * BarChart.Config.xAxisFontMultiplier)
@@ -440,6 +489,142 @@ export class BarChart implements IVisual {
                 (<Event>d3Event).stopPropagation();
             }
         });
+
+        var subtitles = this.subtitles
+
+        this.button.on('click', (d) => {
+            // And Midwest region has better sales than the Northeast region.
+            // const text = "Among all regions, the Southern region has the largest sales. And Midwest region has better sales than the Northeast region."
+            const text = settings.narration.text+' ';
+            const subtitles_fF = "sans-serif";
+            const subtitles_fS = `${Math.min(height, width) * 0.06}px`;
+            let textProperties: TextProperties = {
+                text: 'A',
+                fontFamily: subtitles_fF,
+                fontSize: subtitles_fS
+            };
+            const char_width = textMeasurementService.measureSvgTextWidth(textProperties)
+            const limit = Math.round((width*0.9)/char_width);
+            this.speech.text = text;
+            var sep_list = [0]
+            var cur = 0;
+            while (true) {
+                const next = text.lastIndexOf(' ', cur+limit);
+                if (next === -1 || next === cur) {
+                    break;
+                }
+                sep_list.push(next);
+                cur = next;
+            }
+            sep_list.pop()
+            sep_list.push(text.length-1)
+            console.log(sep_list);
+
+            // clear
+            barSelectionMerged
+                .attr("height", d => 0)
+                .attr("y", d => height)
+            
+            var text_list = [];
+            subtitles
+                .style("font-size", subtitles_fS)
+                .style("fontFamily", subtitles_fF)
+                .style("display",  "initial")
+                .attr("transform", "translate(0, " + Math.round(height*0.9) + ")");
+
+            
+            var updateSubtitles = function(idx) {
+                if (idx < sep_list[0]) {
+                    return;
+                }
+                sep_list.shift();
+                const phrase = text.slice(idx, sep_list[0])
+                let textProperties: TextProperties = {
+                    text: phrase,
+                    fontFamily: subtitles_fF,
+                    fontSize: subtitles_fS
+                };
+                const phrase_width = textMeasurementService.measureSvgTextWidth(textProperties)
+                subtitles
+                    .select("#t1")
+                    .transition().duration(200)
+                    .style("opacity", 0)
+                    .transition().duration(0)
+                    .attr("x", (width - phrase_width) / 2)
+                    .transition().duration(300)
+                    .text(phrase)
+                    .style("opacity", 1)
+                    .style("fill", "black");
+            }
+
+            var lock = true;
+            var waitChannel = [];
+            // default enter
+            var enter = barSelectionMerged
+                .transition()
+                .delay((d, i) => i*(1000/barSelectionMerged.size())/6)
+                .duration(1000)
+                .attr("height", d => height - yScale(<number>d.value))
+                .attr("y", d => yScale(<number>d.value))
+                .on("end", () => {
+                    lock = false;
+                });
+            
+            var foo = function(keyword) {
+                if (keyword.length === 0) {
+                    return;
+                }
+                barSelectionMerged.each((d: BarChartDataPoint, idx) => {
+                    var includes = false;
+                    for (const t of d.category.toLowerCase().split(' ')) {
+                        if (t === keyword.toLowerCase()) {
+                            includes = true
+                        }
+                    }
+                    if (includes) {
+                        var up = barSelectionMerged
+                            .filter((d, i) => i === idx)
+                            .transition()
+                            .duration(300)
+                            .attr("y", d => yScale(<number>d.value) - 0.07*height)
+                        up.on("end", () => {
+                            var down = barSelectionMerged
+                                .filter((d, i) => i === idx)
+                                .transition()
+                                .duration(300)
+                                .attr("y", d => yScale(<number>d.value))
+                        })
+                    }
+                })
+            };
+            this.speech.onboundary = function(event) {
+                console.log(event.name + ' boundary reached after ' + event.elapsedTime + ' seconds.')
+                const keyword = text.slice(event.charIndex, event.charIndex+event.charLength)
+                updateSubtitles(event.charIndex);
+                if (lock) {
+                    waitChannel.push(keyword);
+                    return;
+                }
+                if (waitChannel.length != 0) {
+                    const tmp = waitChannel;
+                    waitChannel = []
+                    for (const e of tmp) {
+                        foo(e);
+                    }
+                }
+                foo(keyword);
+            };
+            this.speech.onend = function(event) {
+                subtitles
+                    .select("#t1")
+                    .transition().duration(600)
+                    .delay(300)
+                    .style("opacity", 0);
+            };
+            window.speechSynthesis.speak(this.speech);
+            
+        });
+
         this.barSelection
             .exit()
             .remove();
@@ -447,7 +632,7 @@ export class BarChart implements IVisual {
     }
 
     private static wordBreak(
-        textNodes: Selection<any, SVGElement>,
+        textNodes: d3.Selection<any, any, any, SVGElement>,
         allowedWidth: number,
         maxHeight: number
     ) {
@@ -457,6 +642,44 @@ export class BarChart implements IVisual {
                 allowedWidth,
                 maxHeight);
         });
+    }
+
+    // 1. grow each bar
+    // 2. bump each bar
+    // 3. fade in text
+    private performBarGrow(barSelection: d3.Selection<d3.BaseType, any, d3.BaseType, any>, height, yScale, mention_order) {
+        barSelection
+            .attr("height", d => 0)
+            .attr("y", d => height)
+        // function animate(idx) {
+        //     var transition = barSelection
+        //         .filter((d, i) => i === idx)
+        //         .transition()
+        //         .duration(500);
+        //     transition
+        //         .attr("height", d => height - yScale(<number>d.value))
+        //         .attr("y", d => yScale(<number>d.value))
+        //         .on("end", () => {
+        //             if (idx < barSelection.size()) animate(idx+1);
+        //         });
+        // }
+        // animate(0);
+        // for (let idx = 0; idx < barSelection.size(); idx++) {
+        //     var transition = barSelection
+        //         .filter((d, i) => i === idx)
+        //         .transition()
+        //         .duration(1000);
+        //     transition
+        //         .attr("height", d => height - yScale(<number>d.value))
+        //         .attr("y", d => yScale(<number>d.value));
+        // }
+        var transition = barSelection
+            .transition()
+            .delay((d, i) => i*(1000/barSelection.size())/6)
+            .duration(1000);
+        transition
+            .attr("height", d => height - yScale(<number>d.value))
+            .attr("y", d => yScale(<number>d.value));
     }
 
     private handleClick(barSelection: d3.Selection<d3.BaseType, any, d3.BaseType, any>) {
@@ -486,7 +709,7 @@ export class BarChart implements IVisual {
     }
 
     private syncSelectionState(
-        selection: Selection<BarChartDataPoint>,
+        selection: d3.Selection<any, BarChartDataPoint, any, BarChartDataPoint>,
         selectionIds: ISelectionId[]
     ): void {
         if (!selection || !selectionIds) {
@@ -603,6 +826,14 @@ export class BarChart implements IVisual {
                     selector: null
                 });
                 break;
+            case 'narration':
+                objectEnumeration.push({
+                    objectName: objectName,
+                    properties: {
+                        text: this.barChartSettings.narration.text
+                    },
+                    selector: null
+                });
         };
 
         return objectEnumeration;
